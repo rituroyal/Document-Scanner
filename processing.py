@@ -67,3 +67,17 @@ def order_points(pts):
     rect[1] = pts[np.argmin(diff)]  # Top-right
     rect[2] = pts[np.argmax(diff)]  # Bottom-left
     return rect
+
+def draw_contour(img, biggest):
+    """ Draws the detected document contour on the image. """
+    if biggest is not None:
+        cv2.polylines(img, [biggest.astype(np.int32)], True, (0, 255, 0), 3)
+    return img
+
+def enhance_document(img):
+    """ Converts image to grayscale, removes shadows, and enhances contrast. """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    # Apply adaptive threshold to make text clearer
+    enhanced = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                     cv2.THRESH_BINARY, 11, 2)
+    return enhanced
