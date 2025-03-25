@@ -4,7 +4,7 @@ import numpy as np
 def preprocess_image(image_path):
     """ Reads and preprocesses the image for contour detection. """
     img = cv2.imread(image_path)
-    img = cv2.resize(img, (960, 1280))  # Resizing for consistency
+    img = cv2.resize(img, (960, 1280)) 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 1)
     edges = cv2.Canny(blurred, 190, 190)
@@ -29,7 +29,7 @@ def auto_crop(img):
     return cropped_img
 
 def warp_perspective(img, biggest, width=480, height=640):
-    """ Applies a perspective transform and auto-crops the document. """
+    # Applies a perspective transform and auto-crops the document.
     if biggest is None:
         return img  # If no document is detected, return original image
 
@@ -43,7 +43,7 @@ def warp_perspective(img, biggest, width=480, height=640):
     return auto_crop(img_warp)
 
 def get_contours(edges, img):
-    """ Finds the largest quadrilateral contour, assuming it's the document. """
+    # Finds the largest quadrilateral contour, assuming it's the document.
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     biggest, max_area = [], 0
 
