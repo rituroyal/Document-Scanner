@@ -122,13 +122,41 @@ def get_contours(edges, min_area=500):
     return biggest.reshape(4, 2) if biggest is not None else None
 
 
+def rotate_image(img, angle=0):
+    """
+    Rotates an image by a specified angle in degrees.
+
+    IPCV Syllabus Mapping - Unit I:
+    Geometric Transformations (Affine 2D Rotation Matrix).
+    - 90, 180, 270 degrees: lossless orthogonal matrix rotation.
+    - Arbitrary angles: calculates 2x3 affine rotation matrix around image center
+      and resamples via cv2.warpAffine.
+    """
+    if angle == 0 or angle is None:
+        return img.copy()
+
+    # Right-angle shortcuts
+    if angle in (90, -270):
+        return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+    elif angle in (180, -180):
+        return cv2.rotate(img, cv2.ROTATE_180)
+    elif angle in (270, -90):
+        return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
+    # Arbitrary angle rotation via 2x3 Affine Rotation Matrix (Unit I)
+    h, w = img.shape[:2]
+    center = (w // 2, h // 2)
+    matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+    return cv2.warpAffine(img, matrix, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
 def detect_document_corners(img):
     """
     Detects the 4 corners of the document boundary.
 
     IPCV Syllabus Mapping - Unit I & III:
-    Uses Canny edge detection, morphological closing, and polygon approximation (approxPolyDP)
-    to segment the document paper quadrilateral boundary.
+    Uses Gaussian smoothing, Canny edge detection (50, 150), morphological closing,
+    and polygon approximation (approxPolyDP) to segment the document paper quadrilateral boundary.
 
     Returns:
         numpy.ndarray of shape (4, 2) in original image coordinate space, or None.
@@ -136,12 +164,38 @@ def detect_document_corners(img):
     h, w = img.shape[:2]
     small = cv2.resize(img, (960, 1280))
     gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else small.copy()
-    blurred = cv2.GaussianBlur(gray, (5, 5), 1)
-    edges = cv2.Canny(blurred, 190, 190)
-    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    biggest = get_contours(edges, min_area=0.30 * 960 * 1280)
-    if biggest is not None:
-        return biggest.astype(np.float32) * np.array([w / 960.0, h / 1280.0], dtype=np.float32)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+    # 1. Standard Canny gradient with morphological close
+    edges = cv2.Canny(blurred, 50, 150)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    min_area = 0.05 * 960 * 1280
+
+    for c in sorted(contours, key=cv2.contourArea, reverse=True)[:5]:
+        area = cv2.contourArea(c)
+        if area > min_area:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            if len(approx) == 4 and cv2.isContourConvex(approx):
+                return approx.reshape(4, 2).astype(np.float32) * np.array([w / 960.0, h / 1280.0], dtype=np.float32)
+
+    # 2. Adaptive Otsu fallback for soft indoor lighting
+    _, otsu_bin = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    edges_otsu = cv2.Canny(otsu_bin, 50, 150)
+    edges_otsu = cv2.morphologyEx(edges_otsu, cv2.MORPH_CLOSE, kernel)
+    contours_otsu, _ = cv2.findContours(edges_otsu, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for c in sorted(contours_otsu, key=cv2.contourArea, reverse=True)[:5]:
+        area = cv2.contourArea(c)
+        if area > min_area:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            if len(approx) == 4 and cv2.isContourConvex(approx):
+                return approx.reshape(4, 2).astype(np.float32) * np.array([w / 960.0, h / 1280.0], dtype=np.float32)
+
     return None
 
 
@@ -370,11 +424,11 @@ def process_image(img, mode="auto", output="bw"):
     blurred = cv2.GaussianBlur(gray, (5, 5), 1)
     edges = cv2.Canny(blurred, 190, 190)
     edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-    biggest = get_contours(edges, min_area=0.30 * 960 * 1280)
+    biggest = detect_document_corners(img)
 
     # 2) flatten (photos are NOT cropped by ink, so we never cut the face)
     if biggest is not None:
-        biggest = biggest.astype(np.float32) * np.array([w / 960.0, h / 1280.0], dtype=np.float32)
+        biggest = biggest.astype(np.float32)
         warped = warp_perspective(img, biggest, crop=not photo)
     else:
         warped = img if photo else auto_crop(img)
