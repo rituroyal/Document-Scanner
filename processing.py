@@ -4,6 +4,40 @@ import cv2
 import numpy as np
 
 
+def apply_noise_filter(img, method="gaussian", ksize=5):
+    """
+    Applies noise reduction filter to an image (Color or Grayscale).
+
+    IPCV Syllabus Mapping - Unit II:
+    - Gaussian Filter: Linear spatial smoothing filter. Convolves the image with
+      a 2D Gaussian kernel. Effective for attenuating high-frequency Gaussian noise.
+    - Median Filter: Non-linear order-statistic filter. Replaces each pixel with
+      the median intensity in its neighborhood. Preserves sharp document edges while
+      eliminating salt-and-pepper / impulse noise.
+
+    Parameters:
+        img: Input image (numpy array, 2D grayscale or 3D BGR).
+        method: "gaussian", "median", or "none".
+        ksize: Aperture linear size. Must be an odd integer >= 3 (e.g. 3, 5, 7).
+
+    Returns:
+        Filtered image as numpy array.
+    """
+    if method == "none" or method is None:
+        return img.copy()
+
+    k = max(3, int(ksize))
+    if k % 2 == 0:
+        k += 1
+
+    if method == "gaussian":
+        return cv2.GaussianBlur(img, (k, k), 0)
+    elif method == "median":
+        return cv2.medianBlur(img, k)
+    else:
+        raise ValueError(f"Unknown filter method '{method}'. Supported: 'gaussian', 'median', 'none'")
+
+
 def is_photo(img):
     """Guess if the picture is a PHOTO (face, scenery) or a TEXT PAGE.
     A text page is almost only white paper and black ink, so it has
@@ -86,6 +120,173 @@ def get_contours(edges, min_area=500):
                 biggest, max_area = approx, area
 
     return biggest.reshape(4, 2) if biggest is not None else None
+
+
+def detect_document_corners(img):
+    """
+    Detects the 4 corners of the document boundary.
+
+    IPCV Syllabus Mapping - Unit I & III:
+    Uses Canny edge detection, morphological closing, and polygon approximation (approxPolyDP)
+    to segment the document paper quadrilateral boundary.
+
+    Returns:
+        numpy.ndarray of shape (4, 2) in original image coordinate space, or None.
+    """
+    h, w = img.shape[:2]
+    small = cv2.resize(img, (960, 1280))
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else small.copy()
+    blurred = cv2.GaussianBlur(gray, (5, 5), 1)
+    edges = cv2.Canny(blurred, 190, 190)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    biggest = get_contours(edges, min_area=0.30 * 960 * 1280)
+    if biggest is not None:
+        return biggest.astype(np.float32) * np.array([w / 960.0, h / 1280.0], dtype=np.float32)
+    return None
+
+
+def visualize_document_boundary(img, corners=None):
+    """
+    Draws document boundary polygon and highlighted corner markers (TL, TR, BL, BR).
+
+    IPCV Syllabus Mapping - Unit I & III:
+    Visualizes pixel coordinates, spatial orientation, and quadrilateral segmentation.
+    """
+    annotated = img.copy()
+    if corners is None:
+        corners = detect_document_corners(img)
+
+    if corners is not None:
+        ordered = order_points(corners)
+        pts = ordered.astype(np.int32)
+        cv2.polylines(annotated, [pts], isClosed=True, color=(0, 255, 0), thickness=4)
+        labels = ["TL", "TR", "BL", "BR"]
+        colors = [(255, 0, 0), (0, 165, 255), (0, 0, 255), (255, 0, 255)]  # BGR
+        radius = max(6, int(min(annotated.shape[:2]) * 0.015))
+        for (x, y), label, color in zip(pts, labels, colors):
+            cv2.circle(annotated, (int(x), int(y)), radius, color, -1)
+            cv2.putText(
+                annotated,
+                label,
+                (int(x) + 10, int(y) - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+    return annotated
+
+
+def apply_threshold(img, method="otsu", block_size=11, c=2):
+    """
+    Applies global or adaptive thresholding to convert image to binary representation.
+
+    IPCV Syllabus Mapping - Unit III:
+    - Otsu Thresholding: Global optimal thresholding. Automatically calculates optimum
+      threshold t that maximizes between-class variance sigma_B^2(t).
+    - Adaptive Gaussian Thresholding: Local threshold calculated as weighted Gaussian
+      sum of neighboring window (block_size x block_size) minus constant C.
+    - Adaptive Mean Thresholding: Local threshold calculated as arithmetic mean of
+      neighboring window minus constant C.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img.copy()
+
+    bsize = max(3, int(block_size))
+    if bsize % 2 == 0:
+        bsize += 1
+
+    if method == "otsu":
+        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        return thresh
+    elif method == "adaptive_gaussian":
+        return cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, bsize, c
+        )
+    elif method == "adaptive_mean":
+        return cv2.adaptiveThreshold(
+            gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, bsize, c
+        )
+    else:
+        raise ValueError(
+            f"Unknown threshold method '{method}'. Supported: 'otsu', 'adaptive_gaussian', 'adaptive_mean'"
+        )
+
+
+def compute_grayscale_histogram(img):
+    """
+    Computes 256-bin intensity histogram of a grayscale or BGR image.
+
+    IPCV Syllabus Mapping - Unit II:
+    Represents the discrete probability distribution of pixel intensity levels r_k.
+    p(r_k) = n_k / MN, where n_k is number of pixels with gray level r_k.
+
+    Parameters:
+        img: 2D grayscale array or 3D BGR array.
+
+    Returns:
+        1D numpy array of length 256 containing raw pixel counts.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+    return hist.flatten()
+
+
+def apply_histogram_equalization(img, method="global", clip_limit=2.0, tile_grid_size=(8, 8)):
+    """
+    Performs Global Histogram Equalization or CLAHE.
+
+    IPCV Syllabus Mapping - Unit II:
+    - Global Equalization: Spreads out frequent intensity values using cumulative distribution
+      function (CDF) mapping s_k = T(r_k) = (L - 1) * sum_{j=0}^k (n_j / MN).
+    - CLAHE (Contrast Limited Adaptive Histogram Equalization): Divides image into contextual
+      tiles (e.g. 8x8), clips histogram peaks to avoid noise amplification, and interpolates
+      tile boundaries using bilinear interpolation.
+
+    Parameters:
+        img: Input image (2D grayscale or 3D BGR).
+        method: "global" or "clahe".
+        clip_limit: Contrast threshold for CLAHE.
+        tile_grid_size: Tile grid tuple for CLAHE.
+
+    Returns:
+        Equalized image matching input format.
+    """
+    is_color = img.ndim == 3
+
+    if method == "global":
+        if is_color:
+            ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+            ycrcb[:, :, 0] = cv2.equalizeHist(ycrcb[:, :, 0])
+            return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
+        else:
+            return cv2.equalizeHist(img)
+    elif method == "clahe":
+        clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+        if is_color:
+            ycrcb = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+            ycrcb[:, :, 0] = clahe.apply(ycrcb[:, :, 0])
+            return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2BGR)
+        else:
+            return clahe.apply(img)
+    else:
+        raise ValueError(f"Unknown equalization method '{method}'. Supported: 'global', 'clahe'")
+
+
+def render_histogram_image(img, width=256, height=120, color=(52, 152, 219)):
+    """
+    Renders a 256-bin intensity histogram as a visual BGR image.
+    Uses pure OpenCV and NumPy (zero external graphing/pandas dependencies).
+    """
+    hist = compute_grayscale_histogram(img)
+    hist_img = np.full((height, width, 3), 245, dtype=np.uint8)
+    max_val = float(hist.max()) if hist.max() > 0 else 1.0
+    normalized = (hist / max_val) * (height - 12)
+    for x in range(min(width, len(hist))):
+        val = int(normalized[x])
+        if val > 0:
+            cv2.line(hist_img, (x, height - 1), (x, height - 1 - val), color, 1)
+    return hist_img
 
 
 def draw_contour(img, biggest):
