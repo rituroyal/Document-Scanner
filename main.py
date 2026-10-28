@@ -264,7 +264,7 @@ def main():
     st.markdown(
         """
         <div style="text-align: center; color: #7f8c8d; margin-top: 3rem;">
-            <p>Scanify • IPCV Lab Project • Units I, II & III</p>
+            <p>Scanify • IPCV Lab Project </p>
             <p>Powered by OpenCV & Streamlit</p>
         </div>
         """,
